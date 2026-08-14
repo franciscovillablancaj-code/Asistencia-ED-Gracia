@@ -1,0 +1,6 @@
+streamlit>=1.35
+gspread>=6.0
+google-auth>=2.29
+google-api-python-client>=2.100
+openpyxl>=3.1
+pandas>=2.2
