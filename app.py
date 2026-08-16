@@ -226,17 +226,6 @@ def analizar_voluntarios(df: pd.DataFrame) -> pd.DataFrame:
     return resultado
 
 
-def tendencia_mensual(df: pd.DataFrame) -> pd.DataFrame:
-    """% de voluntarios que asistieron cada mes transcurrido, para toda la planilla."""
-    meses_validos = [m for m in meses_transcurridos() if m in df.columns]
-    datos = []
-    for m in meses_validos:
-        marcados = df[m].astype(str).str.strip().str.upper().eq(MARCA_PRESENTE).sum()
-        pct = (marcados / len(df) * 100) if len(df) else 0
-        datos.append({"Mes": m, "% asistencia": round(pct)})
-    return pd.DataFrame(datos).set_index("Mes")
-
-
 def _normalizar_rango_edad(valor: str) -> str:
     """Hace calzar el valor real de la celda con una categoría conocida de
     ORDEN_RANGO_EDAD, ignorando mayúsculas/espacios. Si no calza con ninguna,
@@ -327,13 +316,6 @@ st.dataframe(
         )
     },
 )
-
-st.subheader("Tendencia mensual de asistencia")
-tendencia = tendencia_mensual(df)
-if not tendencia.empty:
-    st.line_chart(tendencia)
-else:
-    st.caption("Aún no hay meses transcurridos este año para mostrar una tendencia.")
 
 with st.expander("Ver planilla completa"):
     st.dataframe(df, use_container_width=True)
