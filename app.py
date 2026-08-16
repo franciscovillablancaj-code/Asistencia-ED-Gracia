@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 import io
+import altair as alt
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -302,7 +303,16 @@ else:
 st.subheader("Participación por rango etario")
 resumen_edad = asistencia_por_rango_etario(analisis)
 if not resumen_edad.empty:
-    st.bar_chart(resumen_edad["% asistencia promedio"])
+    datos_grafico = resumen_edad.reset_index()
+    grafico_edad = (
+        alt.Chart(datos_grafico)
+        .mark_bar()
+        .encode(
+            x=alt.X("Rango etario", sort=ORDEN_RANGO_EDAD, title=None),
+            y=alt.Y("% asistencia promedio", title="% asistencia promedio"),
+        )
+    )
+    st.altair_chart(grafico_edad, use_container_width=True)
     st.dataframe(resumen_edad, use_container_width=True)
 else:
     st.caption("No hay datos de rango etario para mostrar en esta planilla.")
