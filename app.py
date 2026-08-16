@@ -46,6 +46,9 @@ COLUMNAS_ESPERADAS = [
     COL_IGLESIA, COL_RANGO_EDAD, COL_ROL,
 ] + MESES
 
+# Orden esperado de las categorías del desplegable "RANGO EDAD"
+ORDEN_RANGO_EDAD = ["menor", "10 a 13 años", "14 a 17 años", "18 a 29 años", "más de 30"]
+
 # ---------------------------------------------------------------------------
 # CONEXIÓN A GOOGLE
 # ---------------------------------------------------------------------------
@@ -198,7 +201,7 @@ def meses_transcurridos() -> list:
 
 def analizar_voluntarios(df: pd.DataFrame) -> pd.DataFrame:
     meses_validos = [m for m in meses_transcurridos() if m in df.columns]
-    resultado = df[[COL_NOMBRE, COL_IGLESIA, COL_ROL]].copy()
+    resultado = df[[COL_NOMBRE, COL_IGLESIA, COL_ROL, COL_RANGO_EDAD]].copy()
 
     if meses_validos:
         resultado["Meses asistidos"] = df[meses_validos].apply(
@@ -220,6 +223,46 @@ def analizar_voluntarios(df: pd.DataFrame) -> pd.DataFrame:
         resultado["Al día (mes actual)"] = None
 
     return resultado
+
+
+def tendencia_mensual(df: pd.DataFrame) -> pd.DataFrame:
+    """% de voluntarios que asistieron cada mes transcurrido, para toda la planilla."""
+    meses_validos = [m for m in meses_transcurridos() if m in df.columns]
+    datos = []
+    for m in meses_validos:
+        marcados = df[m].astype(str).str.strip().str.upper().eq(MARCA_PRESENTE).sum()
+        pct = (marcados / len(df) * 100) if len(df) else 0
+        datos.append({"Mes": m, "% asistencia": round(pct)})
+    return pd.DataFrame(datos).set_index("Mes")
+
+
+def _normalizar_rango_edad(valor: str) -> str:
+    """Hace calzar el valor real de la celda con una categoría conocida de
+    ORDEN_RANGO_EDAD, ignorando mayúsculas/espacios. Si no calza con ninguna,
+    deja el texto tal cual (para no perder datos silenciosamente)."""
+    valor = str(valor).strip()
+    for canonico in ORDEN_RANGO_EDAD:
+        if valor.lower() == canonico.lower():
+            return canonico
+    return valor
+
+
+def asistencia_por_rango_etario(analisis: pd.DataFrame) -> pd.DataFrame:
+    """Para cada rango etario: cantidad de voluntarios, % de asistencia promedio
+    y el total de asistencias (meses marcados) acumuladas por ese grupo."""
+    datos = analisis.copy()
+    datos["Rango etario"] = datos[COL_RANGO_EDAD].apply(_normalizar_rango_edad)
+
+    resumen = datos.groupby("Rango etario").agg(**{
+        "% asistencia promedio": ("% asistencia", "mean"),
+        "Voluntarios": (COL_NOMBRE, "count"),
+        "Total asistencias": ("Meses asistidos", "sum"),
+    })
+    resumen["% asistencia promedio"] = resumen["% asistencia promedio"].round(0)
+
+    orden_presente = [r for r in ORDEN_RANGO_EDAD if r in resumen.index]
+    otros = [r for r in resumen.index if r not in ORDEN_RANGO_EDAD]
+    return resumen.reindex(orden_presente + otros)
 
 
 # ---------------------------------------------------------------------------
@@ -256,8 +299,31 @@ if mes_actual:
 else:
     col4.metric("Mes actual", "fuera de temporada")
 
+st.subheader("Participación por rango etario")
+resumen_edad = asistencia_por_rango_etario(analisis)
+if not resumen_edad.empty:
+    st.bar_chart(resumen_edad["% asistencia promedio"])
+    st.dataframe(resumen_edad, use_container_width=True)
+else:
+    st.caption("No hay datos de rango etario para mostrar en esta planilla.")
+
 st.subheader("Detalle por voluntario/a")
-st.dataframe(analisis.sort_values("% asistencia"), use_container_width=True)
+st.dataframe(
+    analisis.sort_values("% asistencia"),
+    use_container_width=True,
+    column_config={
+        "% asistencia": st.column_config.ProgressColumn(
+            "% asistencia", format="%d%%", min_value=0, max_value=100
+        )
+    },
+)
+
+st.subheader("Tendencia mensual de asistencia")
+tendencia = tendencia_mensual(df)
+if not tendencia.empty:
+    st.line_chart(tendencia)
+else:
+    st.caption("Aún no hay meses transcurridos este año para mostrar una tendencia.")
 
 with st.expander("Ver planilla completa"):
     st.dataframe(df, use_container_width=True)
