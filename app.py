@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 import gspread
 import io
+import base64
 import altair as alt
+from pathlib import Path
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -42,6 +44,10 @@ MES_A_NUMERO = {"MR": 3, "AB": 4, "MY": 5, "JN": 6, "JL": 7, "AG": 8,
 # Letra que marca asistencia en la celda del mes
 MARCA_PRESENTE = "P"
 
+# Marca de agua: archivo de logo (debe estar junto a app.py) y qué tan visible es
+LOGO_MARCA_AGUA = "logo.png"
+OPACIDAD_MARCA_AGUA = 0.05
+
 COLUMNAS_ESPERADAS = [
     COL_REGION, COL_HNA_ENCARGADA, COL_PROGRAMA, COL_NOMBRE,
     COL_IGLESIA, COL_RANGO_EDAD, COL_ROL,
@@ -49,6 +55,9 @@ COLUMNAS_ESPERADAS = [
 
 # Orden esperado de las categorías del desplegable "RANGO EDAD"
 ORDEN_RANGO_EDAD = ["menor", "10 a 13 años", "14 a 17 años", "18 a 29 años", "más de 30"]
+
+# Texto de la opción "ver todo el año" en el selector de mes
+OPCION_ANIO_COMPLETO = "Año completo (hasta la fecha)"
 
 # ---------------------------------------------------------------------------
 # CONEXIÓN A GOOGLE
@@ -188,6 +197,8 @@ def cargar_planilla(spreadsheet_id: str) -> pd.DataFrame:
 # ANÁLISIS
 # ---------------------------------------------------------------------------
 def mes_actual_abrev():
+    """Abreviatura del mes actual según la fecha de hoy (usado en el resumen
+    general de las 41 personas, no en la vista principal por encargada)."""
     hoy_mes = date.today().month
     for abrev, numero in MES_A_NUMERO.items():
         if numero == hoy_mes:
@@ -195,13 +206,26 @@ def mes_actual_abrev():
     return None  # ene/feb no están en la planilla
 
 
-def meses_transcurridos() -> list:
-    hoy_mes = date.today().month
-    return [m for m in MESES if MES_A_NUMERO[m] <= hoy_mes]
+def meses_con_datos(df: pd.DataFrame) -> list:
+    """Meses de la planilla que tienen al menos una marca de asistencia
+    (así los meses futuros o vacíos no aparecen como opción)."""
+    return [
+        m for m in MESES
+        if m in df.columns and df[m].astype(str).str.strip().str.upper().eq(MARCA_PRESENTE).any()
+    ]
 
 
-def analizar_voluntarios(df: pd.DataFrame) -> pd.DataFrame:
-    meses_validos = [m for m in meses_transcurridos() if m in df.columns]
+def voluntarios_sin_marcar(df: pd.DataFrame, mes: str) -> int:
+    """Cuenta cuántos voluntarios NO tienen marcada la asistencia en un mes dado."""
+    if not mes or mes not in df.columns:
+        return 0
+    return int((~df[mes].astype(str).str.strip().str.upper().eq(MARCA_PRESENTE)).sum())
+
+
+def analizar_voluntarios(df: pd.DataFrame, meses_analizar: list) -> pd.DataFrame:
+    """Calcula asistencia por voluntario/a considerando solo los meses indicados
+    (puede ser un solo mes, o varios para una vista de año completo)."""
+    meses_validos = [m for m in meses_analizar if m in df.columns]
     resultado = df[[COL_NOMBRE, COL_IGLESIA, COL_ROL, COL_RANGO_EDAD]].copy()
 
     if meses_validos:
@@ -212,16 +236,8 @@ def analizar_voluntarios(df: pd.DataFrame) -> pd.DataFrame:
         resultado["Meses asistidos"] = 0
 
     total_meses = max(len(meses_validos), 1)
-    resultado["Meses transcurridos"] = len(meses_validos)
+    resultado["Meses considerados"] = len(meses_validos)
     resultado["% asistencia"] = (resultado["Meses asistidos"] / total_meses * 100).round(0)
-
-    mes_actual = mes_actual_abrev()
-    if mes_actual and mes_actual in df.columns:
-        resultado["Al día (mes actual)"] = (
-            df[mes_actual].astype(str).str.strip().str.upper().eq(MARCA_PRESENTE)
-        )
-    else:
-        resultado["Al día (mes actual)"] = None
 
     return resultado
 
@@ -255,10 +271,50 @@ def asistencia_por_rango_etario(analisis: pd.DataFrame) -> pd.DataFrame:
     return resumen.reindex(orden_presente + otros)
 
 
+def agregar_marca_agua(ruta: str = LOGO_MARCA_AGUA, opacidad: float = OPACIDAD_MARCA_AGUA):
+    """Pone el logo repetido de fondo, en varios tamaños y posiciones, muy
+    transparente y sin bloquear clics ni tapar el contenido."""
+    archivo = Path(ruta)
+    if not archivo.exists():
+        return  # si no está el logo, simplemente no muestra nada (no rompe la app)
+
+    b64 = base64.b64encode(archivo.read_bytes()).decode()
+    url = f'url("data:image/png;base64,{b64}")'
+
+    # 6 copias del mismo logo, distinto tamaño y posición cada una
+    imagenes = ", ".join([url] * 6)
+    tamanos = "110px, 220px, 70px, 170px, 90px, 150px"
+    posiciones = "6% 12%, 82% 8%, 25% 50%, 68% 62%, 12% 85%, 88% 88%"
+
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            position: relative;
+        }}
+        .stApp::before {{
+            content: "";
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            pointer-events: none;
+            opacity: {opacidad};
+            background-repeat: no-repeat;
+            background-image: {imagenes};
+            background-size: {tamanos};
+            background-position: {posiciones};
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # INTERFAZ
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Control de planillas de asistencia", layout="wide")
+agregar_marca_agua()
 st.title("Control de planillas de asistencia")
 
 indice = cargar_indice()
@@ -276,37 +332,16 @@ if df.empty:
     st.warning("No se encontraron voluntarios/as en esta planilla.")
     st.stop()
 
-analisis = analizar_voluntarios(df)
-mes_actual = mes_actual_abrev()
+meses_disponibles = meses_con_datos(df)
+opciones_mes = [OPCION_ANIO_COMPLETO] + meses_disponibles
+mes_sel = st.selectbox("Selecciona el mes a analizar", opciones_mes)
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Voluntarios/as", len(df))
-col2.metric("Meses transcurridos", len(meses_transcurridos()))
-col3.metric("Asistencia promedio", f"{analisis['% asistencia'].mean():.0f}%")
-if mes_actual:
-    pendientes = int((analisis["Al día (mes actual)"] == False).sum())
-    col4.metric(f"Sin marcar en {mes_actual}", pendientes)
-else:
-    col4.metric("Mes actual", "fuera de temporada")
+meses_analizar = meses_disponibles if mes_sel == OPCION_ANIO_COMPLETO else [mes_sel]
+analisis = analizar_voluntarios(df, meses_analizar)
 
-st.subheader("Participación por rango etario")
-resumen_edad = asistencia_por_rango_etario(analisis)
-if not resumen_edad.empty:
-    datos_grafico = resumen_edad.reset_index()
-    grafico_edad = (
-        alt.Chart(datos_grafico)
-        .mark_bar()
-        .encode(
-            x=alt.X("Rango etario", sort=ORDEN_RANGO_EDAD, title=None),
-            y=alt.Y("% asistencia promedio", title="% asistencia promedio"),
-        )
-    )
-    st.altair_chart(grafico_edad, use_container_width=True)
-    st.dataframe(resumen_edad, use_container_width=True)
-else:
-    st.caption("No hay datos de rango etario para mostrar en esta planilla.")
+st.metric("Asistencia promedio", f"{analisis['% asistencia'].mean():.0f}%")
 
-st.subheader("Detalle por voluntario/a")
+st.subheader(f"Detalle por voluntario/a — {mes_sel}")
 st.dataframe(
     analisis.sort_values("% asistencia"),
     use_container_width=True,
@@ -322,17 +357,35 @@ with st.expander("Ver planilla completa"):
 
 with st.expander("Resumen de las 41 personas (puede tardar unos segundos)"):
     if st.button("Cargar resumen general"):
+        mes_actual = mes_actual_abrev()
         resumen = []
         for _, row in indice.iterrows():
             try:
                 df_p = cargar_planilla(row["ID_Planilla"])
-                a_p = analizar_voluntarios(df_p)
+                a_p = analizar_voluntarios(df_p, meses_con_datos(df_p))
                 resumen.append({
                     "Persona": row["Persona"],
                     "Voluntarios": len(df_p),
                     "Asistencia promedio (%)": round(a_p["% asistencia"].mean(), 0) if len(df_p) else 0,
-                    f"Sin marcar en {mes_actual or '-'}": int((a_p["Al día (mes actual)"] == False).sum()) if mes_actual else "N/D",
+                    f"Sin marcar en {mes_actual or '-'}": voluntarios_sin_marcar(df_p, mes_actual),
                 })
             except Exception as e:
                 resumen.append({"Persona": row["Persona"], "error": str(e)})
         st.dataframe(pd.DataFrame(resumen), use_container_width=True)
+
+st.subheader(f"Participación por rango etario — {mes_sel}")
+resumen_edad = asistencia_por_rango_etario(analisis)
+if not resumen_edad.empty:
+    datos_grafico = resumen_edad.reset_index()
+    grafico_edad = (
+        alt.Chart(datos_grafico)
+        .mark_bar()
+        .encode(
+            x=alt.X("Rango etario", sort=ORDEN_RANGO_EDAD, title=None),
+            y=alt.Y("% asistencia promedio", title="% asistencia promedio"),
+        )
+    )
+    st.altair_chart(grafico_edad, use_container_width=True)
+    st.dataframe(resumen_edad, use_container_width=True)
+else:
+    st.caption("No hay datos de rango etario para mostrar en esta planilla.")
