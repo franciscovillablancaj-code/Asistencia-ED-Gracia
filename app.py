@@ -9,7 +9,6 @@ from PIL import Image
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-from datetime import date
 
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN — ajusta estos valores a tu planilla real
@@ -39,8 +38,6 @@ COL_ROL = "ROL"
 
 # Columnas de meses, en el mismo orden en que aparecen en la planilla
 MESES = ["MR", "AB", "MY", "JN", "JL", "AG", "SEP", "OCT", "NOV", "DIC"]
-MES_A_NUMERO = {"MR": 3, "AB": 4, "MY": 5, "JN": 6, "JL": 7, "AG": 8,
-                "SEP": 9, "OCT": 10, "NOV": 11, "DIC": 12}
 
 # Letra que marca asistencia en la celda del mes
 MARCA_PRESENTE = "P"
@@ -207,19 +204,28 @@ def cargar_planilla(spreadsheet_id: str) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+@st.cache_data(ttl=300)
+def cargar_todas_las_planillas() -> pd.DataFrame:
+    """Descarga y junta las planillas de las 41 personas en un solo DataFrame,
+    agregando de qué encargada viene cada fila. Las que fallan se omiten."""
+    indice = cargar_indice()
+    partes = []
+    for _, fila in indice.iterrows():
+        try:
+            df_p = cargar_planilla(fila["ID_Planilla"])
+            df_p = df_p.copy()
+            df_p["_Encargada"] = fila["Persona"]
+            partes.append(df_p)
+        except Exception:
+            continue
+    if not partes:
+        return pd.DataFrame()
+    return pd.concat(partes, ignore_index=True, sort=False)
+
+
 # ---------------------------------------------------------------------------
 # ANÁLISIS
 # ---------------------------------------------------------------------------
-def mes_actual_abrev():
-    """Abreviatura del mes actual según la fecha de hoy (usado en el resumen
-    general de las 41 personas, no en la vista principal por encargada)."""
-    hoy_mes = date.today().month
-    for abrev, numero in MES_A_NUMERO.items():
-        if numero == hoy_mes:
-            return abrev
-    return None  # ene/feb no están en la planilla
-
-
 def meses_con_datos(df: pd.DataFrame) -> list:
     """Meses de la planilla que tienen al menos una marca de asistencia
     (así los meses futuros o vacíos no aparecen como opción)."""
@@ -227,13 +233,6 @@ def meses_con_datos(df: pd.DataFrame) -> list:
         m for m in MESES
         if m in df.columns and df[m].astype(str).str.strip().str.upper().eq(MARCA_PRESENTE).any()
     ]
-
-
-def voluntarios_sin_marcar(df: pd.DataFrame, mes: str) -> int:
-    """Cuenta cuántos voluntarios NO tienen marcada la asistencia en un mes dado."""
-    if not mes or mes not in df.columns:
-        return 0
-    return int((~df[mes].astype(str).str.strip().str.upper().eq(MARCA_PRESENTE)).sum())
 
 
 def analizar_voluntarios(df: pd.DataFrame, meses_analizar: list) -> pd.DataFrame:
@@ -341,75 +340,134 @@ st.set_page_config(page_title="Control de planillas de asistencia", layout="wide
 agregar_marca_agua()
 st.title("Control de planillas de asistencia")
 
+if "modo" not in st.session_state:
+    st.session_state.modo = None
+
+col_a, col_b = st.columns(2)
+if col_a.button(
+    "Seleccionar encargada", use_container_width=True,
+    type="primary" if st.session_state.modo == "encargada" else "secondary",
+):
+    st.session_state.modo = "encargada"
+    st.rerun()
+if col_b.button(
+    "Análisis completo", use_container_width=True,
+    type="primary" if st.session_state.modo == "completo" else "secondary",
+):
+    st.session_state.modo = "completo"
+    st.rerun()
+
+if st.session_state.modo is None:
+    st.info("Elige una opción para comenzar: revisar a una encargada específica, o ver el análisis de todas.")
+    st.stop()
+
 indice = cargar_indice()
 if indice.empty:
     st.error("No se pudo cargar la hoja índice. Revisa INDICE_SHEET_ID y los permisos de la service account.")
     st.stop()
 
-persona_sel = st.selectbox("Selecciona a la HNA encargada", indice["Persona"].tolist())
-spreadsheet_id = indice.loc[indice["Persona"] == persona_sel, "ID_Planilla"].iloc[0]
+# ---------------------------------------------------------------------------
+# MODO: una encargada específica
+# ---------------------------------------------------------------------------
+if st.session_state.modo == "encargada":
+    persona_sel = st.selectbox("Selecciona a la HNA encargada", indice["Persona"].tolist())
+    spreadsheet_id = indice.loc[indice["Persona"] == persona_sel, "ID_Planilla"].iloc[0]
 
-with st.spinner(f"Cargando planilla de {persona_sel}..."):
-    df = cargar_planilla(spreadsheet_id)
+    with st.spinner(f"Cargando planilla de {persona_sel}..."):
+        df = cargar_planilla(spreadsheet_id)
 
-if df.empty:
-    st.warning("No se encontraron voluntarios/as en esta planilla.")
-    st.stop()
+    if df.empty:
+        st.warning("No se encontraron voluntarios/as en esta planilla.")
+        st.stop()
 
-meses_disponibles = meses_con_datos(df)
-opciones_mes = [OPCION_ANIO_COMPLETO] + meses_disponibles
-mes_sel = st.selectbox("Selecciona el mes a analizar", opciones_mes, format_func=etiqueta_mes)
+    meses_disponibles = meses_con_datos(df)
+    opciones_mes = [OPCION_ANIO_COMPLETO] + meses_disponibles
+    mes_sel = st.selectbox("Selecciona el mes a analizar", opciones_mes, format_func=etiqueta_mes)
 
-meses_analizar = meses_disponibles if mes_sel == OPCION_ANIO_COMPLETO else [mes_sel]
-analisis = analizar_voluntarios(df, meses_analizar)
+    meses_analizar = meses_disponibles if mes_sel == OPCION_ANIO_COMPLETO else [mes_sel]
+    analisis = analizar_voluntarios(df, meses_analizar)
 
-st.metric("Asistencia promedio", f"{analisis['% asistencia'].mean():.0f}%")
+    st.metric("Asistencia promedio", f"{analisis['% asistencia'].mean():.0f}%")
 
-st.subheader(f"Detalle por voluntario/a — {etiqueta_mes(mes_sel)}")
-st.dataframe(
-    analisis.sort_values("% asistencia"),
-    use_container_width=True,
-    column_config={
-        "% asistencia": st.column_config.ProgressColumn(
-            "% asistencia", format="%d%%", min_value=0, max_value=100
-        )
-    },
-)
-
-with st.expander("Ver planilla completa"):
-    st.dataframe(df, use_container_width=True)
-
-with st.expander("Resumen de las 41 personas (puede tardar unos segundos)"):
-    if st.button("Cargar resumen general"):
-        mes_actual = mes_actual_abrev()
-        resumen = []
-        for _, row in indice.iterrows():
-            try:
-                df_p = cargar_planilla(row["ID_Planilla"])
-                a_p = analizar_voluntarios(df_p, meses_con_datos(df_p))
-                resumen.append({
-                    "Persona": row["Persona"],
-                    "Voluntarios": len(df_p),
-                    "Asistencia promedio (%)": round(a_p["% asistencia"].mean(), 0) if len(df_p) else 0,
-                    f"Sin marcar en {mes_actual or '-'}": voluntarios_sin_marcar(df_p, mes_actual),
-                })
-            except Exception as e:
-                resumen.append({"Persona": row["Persona"], "error": str(e)})
-        st.dataframe(pd.DataFrame(resumen), use_container_width=True)
-
-st.subheader(f"Participación por rango etario — {etiqueta_mes(mes_sel)}")
-resumen_edad = asistencia_por_rango_etario(analisis)
-if not resumen_edad.empty:
-    datos_grafico = resumen_edad.reset_index()
-    grafico_edad = (
-        alt.Chart(datos_grafico)
-        .mark_bar()
-        .encode(
-            x=alt.X("Rango etario", sort=ORDEN_RANGO_EDAD, title=None),
-            y=alt.Y("% asistencia promedio", title="% asistencia promedio"),
-        )
+    st.subheader(f"Detalle por voluntario/a — {etiqueta_mes(mes_sel)}")
+    st.dataframe(
+        analisis.sort_values("% asistencia"),
+        use_container_width=True,
+        column_config={
+            "% asistencia": st.column_config.ProgressColumn(
+                "% asistencia", format="%d%%", min_value=0, max_value=100
+            )
+        },
     )
-    st.altair_chart(grafico_edad, use_container_width=True)
-    st.dataframe(resumen_edad, use_container_width=True)
+
+    with st.expander("Ver planilla completa"):
+        st.dataframe(df, use_container_width=True)
+
+    st.subheader(f"Participación por rango etario — {etiqueta_mes(mes_sel)}")
+    resumen_edad = asistencia_por_rango_etario(analisis)
+    if not resumen_edad.empty:
+        datos_grafico = resumen_edad.reset_index()
+        grafico_edad = (
+            alt.Chart(datos_grafico)
+            .mark_bar()
+            .encode(
+                x=alt.X("Rango etario", sort=ORDEN_RANGO_EDAD, title=None),
+                y=alt.Y("% asistencia promedio", title="% asistencia promedio"),
+            )
+        )
+        st.altair_chart(grafico_edad, use_container_width=True)
+        st.dataframe(resumen_edad, use_container_width=True)
+    else:
+        st.caption("No hay datos de rango etario para mostrar en esta planilla.")
+
+# ---------------------------------------------------------------------------
+# MODO: análisis completo (todas las encargadas)
+# ---------------------------------------------------------------------------
 else:
-    st.caption("No hay datos de rango etario para mostrar en esta planilla.")
+    with st.spinner("Cargando las 41 planillas, puede tardar un poco..."):
+        df_global = cargar_todas_las_planillas()
+
+    if df_global.empty:
+        st.warning("No se pudo cargar ninguna planilla.")
+        st.stop()
+
+    meses_globales = meses_con_datos(df_global)
+    analisis_global = analizar_voluntarios(df_global, meses_globales)
+
+    iglesias = sorted({
+        str(v).strip() for v in df_global.get(COL_IGLESIA, []) if str(v).strip()
+    })
+    asistencia_perfecta = int((analisis_global["% asistencia"] == 100).sum())
+
+    col1, col2 = st.columns(2)
+    col1.metric("Iglesias participantes", len(iglesias))
+    col2.metric("Voluntarios con asistencia perfecta", asistencia_perfecta)
+
+    with st.expander(f"Ver listado de iglesias ({len(iglesias)})"):
+        for ig in iglesias:
+            st.write(f"- {ig}")
+
+    st.subheader("Participación por rango etario — total hasta la fecha")
+    resumen_edad_global = asistencia_por_rango_etario(analisis_global)
+    if not resumen_edad_global.empty:
+        datos_grafico = resumen_edad_global.reset_index()
+        grafico_global = (
+            alt.Chart(datos_grafico)
+            .mark_bar()
+            .encode(
+                x=alt.X("Rango etario", sort=ORDEN_RANGO_EDAD, title=None),
+                y=alt.Y("Voluntarios", title="Total de voluntarios"),
+            )
+        )
+        st.altair_chart(grafico_global, use_container_width=True)
+        st.dataframe(resumen_edad_global, use_container_width=True)
+    else:
+        st.caption("No hay datos de rango etario para mostrar.")
+
+    with st.expander("Resumen por encargada"):
+        analisis_global["_Encargada"] = df_global["_Encargada"].values
+        resumen_encargadas = analisis_global.groupby("_Encargada").agg(**{
+            "Voluntarios": (COL_NOMBRE, "count"),
+            "Asistencia promedio (%)": ("% asistencia", "mean"),
+        }).round(0)
+        st.dataframe(resumen_encargadas, use_container_width=True)
