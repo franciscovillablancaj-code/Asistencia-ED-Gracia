@@ -496,3 +496,12 @@ else:
             "Asistencia promedio (%)": ("% asistencia", "mean"),
         }).round(0)
         st.dataframe(resumen_encargadas, use_container_width=True)
+
+# ---------------------------------------------------------------------------
+# PIE DE PÁGINA (común a ambos modos)
+# ---------------------------------------------------------------------------
+st.divider()
+if Path(LOGO_MARCA_AGUA).exists():
+    _, col_logo, _ = st.columns([2, 1, 2])
+    with col_logo:
+        st.image(LOGO_MARCA_AGUA, use_container_width=True)
