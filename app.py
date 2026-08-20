@@ -336,9 +336,34 @@ def agregar_marca_agua(ruta: str = LOGO_MARCA_AGUA, opacidad: float = OPACIDAD_M
 # ---------------------------------------------------------------------------
 # INTERFAZ
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Control de planillas de asistencia", layout="wide")
+try:
+    _icono_pagina = Image.open(LOGO_MARCA_AGUA)
+except Exception:
+    _icono_pagina = "🙌"
+
+st.set_page_config(page_title="ED-Gracia 2026", page_icon=_icono_pagina, layout="wide")
 agregar_marca_agua()
-st.title("Control de planillas de asistencia")
+
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@700;800&display=swap');
+    .titulo-ed-gracia {
+        font-family: 'Baloo 2', sans-serif;
+        font-size: 3rem;
+        font-weight: 800;
+        background: linear-gradient(90deg, #46F014, #0AD2FA, #FA14A0);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin: 0 0 0.5rem 0;
+        line-height: 1.1;
+    }
+    </style>
+    <div class="titulo-ed-gracia">ED-Gracia 2026</div>
+    """,
+    unsafe_allow_html=True,
+)
 
 if "modo" not in st.session_state:
     st.session_state.modo = None
